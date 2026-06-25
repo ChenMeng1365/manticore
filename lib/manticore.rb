@@ -21,29 +21,4 @@ require_relative 'xmlutils/tree_parser'
 require_relative 'xmlutils/xpath'
 require_relative 'xmlutils/formatters'
 require_relative 'xmlutils/xml_doc'
-
-module XmlUtils
-  VERSION = "3.0.1"
-
-  def self.parse(source)
-    parser = TreeParser.new(source)
-    parser.parse
-  end
-
-  def self.new_document
-    Document.new
-  end
-
-  def self.create_element(name, attributes = {})
-    element = Element.new(name)
-    attributes.each { |k, v| element.add_attribute(k, v) }
-    element
-  end
-
-  def self.to_xml_string(node)
-    formatter = Formatters::Default.new
-    output = ""
-    formatter.write(node, output)
-    output
-  end
-end
+require_relative 'mdutils/rediscount'

@@ -273,3 +273,220 @@ puts node.pretty(:to_xml, :xml)
 # 三元组 / 对象 / JSON 转换
 p node.to_triad, node.to_obj
 ```
+
+
+---
+
+
+## ReDiscount Markdown 解析器（rdiscount API 兼容层）
+
+`mdutils/rediscount` 是 Markdown 处理组件，提供 Markdown → HTML 文档解析转换，完全兼容 `rdiscount` Gem 的 API 接口，无需编译 C 扩展即可在任何 Ruby 3.0+ 环境中运行。
+
+### 设计目标
+
+- **零原生依赖**：摆脱 `rdiscount` 对 C 库 `libmarkdown` 的编译依赖，解决 Windows / 跨平台部署难题。
+- **API 平替**：构造函数、标志位、方法名与 `RDiscount` 逐一对齐，现有项目只需 `s/RDiscount/ReDiscount/` 即可迁移。
+- **功能对齐**：覆盖 `rdiscount` 的核心扩展特性（表格、脚注、目录、SmartyPants 等），并保留 BlueCloth 兼容别名。
+
+### 文件结构
+
+```
+lib/
+├── mdutils/
+│   └── rediscount.rb          # 纯 Ruby Markdown 解析器（ReDiscount + MarkdownParser）
+├── test/
+│   └── mdutils_test.rb        # 与原生 rdiscount 的对比测试套件
+└── manticore.rb               # 统一入口，require 'manticore' 自动加载
+```
+
+---
+
+### 核心实现要点
+
+#### 1. 双层架构
+
+```
+┌─────────────────┐
+│   ReDiscount    │  ← 公共 API：标志管理、入口方法 to_html / toc_content
+│   (接口类)       │
+└─────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│ MarkdownParser  │  ← 内部实现：分块 → 渲染 → 后处理
+│   (解析引擎)    │
+└─────────────────┘
+```
+
+- **ReDiscount** 负责接收原始 Markdown 文本与开关标志，提供 `to_html`、`toc_content` 及所有 `attr_accessor` 标志位。
+- **MarkdownParser** 为内部无状态解析引擎，执行「预处理 → 块级分块 → 内联渲染 → 后处理」四阶段流水线。
+
+#### 2. 预处理阶段
+
+1. **换行标准化**：统一 `\r\n`、`\r` 为 `\n`。
+2. **引用定义提取**：识别 `[^id]: url "title"` 形式的引用链接与脚注定义，从正文中剥离并建立查找表。
+3. **脚注多行合并**：支持缩进续行的脚注内容收集。
+
+#### 3. 块级解析（Block-level）
+
+扫描器按优先级逐行识别以下块类型：
+
+| 块类型 | 识别规则 | 说明 |
+|--------|----------|------|
+| 水平线 (`:hr`) | `^*{3,}` / `^-{3,}` / `^_{3,}` | 标准分隔线 |
+| ATX 标题 (`:header`) | `^#{1,6}\s+...` | 1–6 级标题 |
+| Setext 标题 (`:header`) | 下划线 `====` / `----` | 1–2 级标题 |
+| 围栏代码 (`:code`) | \`\`\`lang … \`\`\` | GFM 风格代码块 |
+| 缩进代码 (`:code`) | `^    ` 或 `^\t` | 经典 4 空格/Tab 缩进 |
+| 引用块 (`:blockquote`) | `^>\s?...` | 支持嵌套 |
+| 表格 (`:table`) | `\|...\|` + `\|:-:\|` | GFM / Discount 扩展 |
+| 定义列表 (`:deflist`) | term + `^:\s+def` | Discount 扩展 |
+| 无序列表 (`:ul`) | `* ` / `+ ` / `- ` | 支持嵌套与多行项 |
+| 有序列表 (`:ol`) | `1. ` / `1) ` | 数字序号 |
+| 字母列表 (`:ol_alpha`) | `a. ` / `a) ` | 需 `:md1compat` 标志 |
+| HTML 块 (`:html`) | `<div>` / `<table>` 等 | 保留原始标签 |
+| 段落 (`:paragraph`) | 默认兜底 | 连续非空行 |
+
+#### 4. 内联渲染（Inline）
+
+处理顺序经过精心设计，避免嵌套冲突：
+
+1. **代码片段保护** `` `code` `` → 占位符，防止后续正则误匹配。
+2. **图片** `![alt](url =WxH)` → 支持 Discount 尺寸扩展。
+3. **链接** `[text](url "title")` 与引用链接 `[text][ref]`。
+4. **自动链接** `<https://...>` / `<mail@...>`（需 `:autolink`）。
+5. **删除线** `~~text~~` → `<del>`。
+6. **上标** `^text^` → `<sup>`。
+7. **强调** `**strong**` / `*em*` / `__strong__` / `_em_`。
+8. **硬换行** 行尾两空格 → `<br />`。
+9. **脚注引用** `[^id]` → 上标链接。
+10. **恢复代码片段** 占位符还原为 `<code>`。
+
+#### 5. 后处理阶段
+
+- **Smartypants**（`:smart`）： `"..."` → `&ldquo;...&rdquo;`，`'...'` → `&lsquo;...&rsquo;`，`--` → `&mdash;`，`...` → `&hellip;`。
+- **脚注列表生成**：在文档末尾追加 `<div class="footnotes">` 有序列表。
+- **HTML 过滤**：`:filter_html`  strip 全部标签；`:filter_styles` 移除 `<style>` 块。
+
+### 支持标志位（Flags）
+
+构造函数支持通过 Symbol 列表一键开启：
+
+```ruby
+rd = ReDiscount.new(text, :smart, :footnotes, :autolink)
+```
+
+| 标志 | 说明 | 默认 |
+|------|------|------|
+| `:smart` | 智能引号与排版符号（SmartyPants） | false |
+| `:filter_html` | 过滤所有 HTML 标签 | false |
+| `:filter_styles` | 过滤 `<style>` 块 | false |
+| `:footnotes` | 启用脚注 `[^id]` | false |
+| `:generate_toc` | 生成目录并插入标题锚点 | false |
+| `:no_image` | 禁用图片解析 | false |
+| `:no_links` | 禁用链接解析 | false |
+| `:no_tables` | 禁用表格解析 | false |
+| `:strict` | 严格模式 | false |
+| `:autolink` | 自动识别 URL 与邮箱链接 | false |
+| `:safelink` | 安全链接（仅允许 http/https/ftp/news） | false |
+| `:no_pseudo_protocols` | 禁用伪协议链接 | false |
+| `:no_superscript` | 禁用上标 | false |
+| `:no_strikethrough` | 禁用删除线 | false |
+| `:latex` | LaTeX 支持占位 | false |
+| `:explicitlist` | 显式列表（多行项不嵌套 `<p>`） | false |
+| `:md1compat` | Markdown 1.0 兼容（字母列表等） | false |
+
+### 使用示例
+
+#### 基础用法
+
+```ruby
+require 'mdutils/rediscount'
+
+markdown = ReDiscount.new("Hello **World**!")
+puts markdown.to_html
+# => <p>Hello <strong>World</strong>!</p>
+```
+
+#### 生成目录
+
+```ruby
+text = <<~MD
+  # 第一章
+  ## 1.1 小节
+  # 第二章
+MD
+
+rd = ReDiscount.new(text, :generate_toc)
+puts rd.toc_content
+# => <ul>...<a href="#第一章">第一章</a>...</ul>
+puts rd.to_html
+# => 标题自动附带 <a name="第一章"></a> 锚点
+```
+
+#### 表格与对齐
+
+```ruby
+text = <<~MD
+  | 左对齐 | 居中 | 右对齐 |
+  |:-------|:----:|-------:|
+  | A      | B    | C      |
+MD
+
+puts ReDiscount.new(text).to_html
+# => <table>...<th style="text-align:left;">...
+```
+
+#### 脚注
+
+```ruby
+text = <<~MD
+  这是一个脚注示例[^1]。
+
+  [^1]: 脚注内容支持多行
+      续行缩进。
+MD
+
+puts ReDiscount.new(text, :footnotes).to_html
+# => <sup><a href="#fn1" id="ref1">1</a></sup>
+# => <div class="footnotes">...</div>
+```
+
+#### BlueCloth 兼容
+
+```ruby
+require 'mdutils/rediscount'
+# BlueCloth 自动别名为 ReDiscount
+markdown = BlueCloth.new("Hello World!")
+puts markdown.to_html
+```
+
+### 与原生 rdiscount 的差异
+
+本实现以「最大兼容」为目标，但纯 Ruby 解析与 C 扩展在边界处理上仍有细微差异，测试套件中已标记为已知差异（`assert_differs_from_rdiscount`）：
+
+| 差异点 | 说明 |
+|--------|------|
+| 引用块空白 | 嵌套引用块的内部 `<p>` 剥离策略与 `rdiscount` 不同，导致空白字符差异。 |
+| 上标尾部 `^` | `x^2^` 中 `rdiscount` 会残留尾部 `^`，本实现完全移除。 |
+| 相邻列表合并 | `rdiscount` 会将相邻同类型列表合并为一个 `<ul>`；本实现保持独立列表。 |
+| `filter_html` 段落 | 当 HTML 块位于顶部时，`rdiscount` 会保留空 `<p></p>`，本实现可能将其一并过滤。 |
+| `explicitlist` 多行项 | 多行列表项的换行与 `<p>` 嵌套策略不同。 |
+
+> 注：以上差异不影响语义正确性，仅影响 HTML 空白与标签嵌套细节。常规文档（段落、标题、列表、表格、链接、图片、代码块）的输出与 `rdiscount` 完全一致。
+
+### 测试
+
+测试脚本与原生 `rdiscount` 进行交叉比对，覆盖块级元素、内联元素、扩展语法与全部标志位：
+
+```bash
+ruby -I lib test/mdutils_test.rb
+```
+
+运行时会自动检测系统中是否安装了原生 `rdiscount` Gem：
+- 若已安装，则执行输出对比，标记已知差异。
+- 若未安装，则跳过比对测试，仅运行纯 Ruby 断言。
+
+
+---
+

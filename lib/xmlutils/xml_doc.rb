@@ -17,6 +17,32 @@
 
 ['json','yaml'].each{|mod|require mod}
 
+module XmlUtils
+  VERSION = "3.0.1"
+
+  def self.parse(source)
+    parser = TreeParser.new(source)
+    parser.parse
+  end
+
+  def self.new_document
+    Document.new
+  end
+
+  def self.create_element(name, attributes = {})
+    element = Element.new(name)
+    attributes.each { |k, v| element.add_attribute(k, v) }
+    element
+  end
+
+  def self.to_xml_string(node)
+    formatter = Formatters::Default.new
+    output = ""
+    formatter.write(node, output)
+    output
+  end
+end
+
 class XmlNode
   attr_accessor :name, :attributes, :elements, :parent, :next, :prev
 
