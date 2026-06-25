@@ -202,7 +202,7 @@ Node
 
 ```bash
 gem build manticore.gemspec
-gem install --local manticore-3.0.0.gem
+gem install --local manticore-smash-3.0.0.gem
 ```
 
 测试脚本覆盖以下场景：

@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 Gem::Specification.new do |spec|
-  spec.name          = "manticore"
+  spec.name          = "manticore-smash"
   spec.version       = "3.1.0"
-  spec.authors       = ["Manticore"]
+  spec.authors       = ["Frampt"]
   spec.summary       = "A multi-format toolkit"
   spec.description   = "A multi-format library for parsing, formatting, interacting and more."
   spec.homepage      = "https://github.com/ChenMeng1365/manticore"
