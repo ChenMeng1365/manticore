@@ -442,7 +442,9 @@ ruby -I lib test/xlsxkit_test.rb
 8. JSON / CSV 输出
 9. 大文件流式读取
 
----## ReDiscount Markdown 解析器（rdiscount API 兼容层）
+---
+
+## ReDiscount Markdown 解析器（rdiscount API 兼容层）
 
 `mdutils/rediscount` 是 Markdown 处理组件，提供 Markdown → HTML 文档解析转换，完全兼容 `rdiscount` Gem 的 API 接口，无需编译 C 扩展即可在任何 Ruby 3.0+ 环境中运行。
 
