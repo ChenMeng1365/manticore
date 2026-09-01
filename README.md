@@ -55,9 +55,14 @@ lib/
 │   ├── xpath.rb             # XPath 简化查询引擎
 │   ├── formatters.rb        # 序列化与格式化输出
 │   └── xml_doc.rb           # 模型转换：XmlUtils DOM → XmlNode 
+├── xlsxkit/
+│   ├── zip_reader.rb        # 纯 Ruby ZIP32 读取器
+│   ├── sax_parser.rb        # SAX 流式 XML 解析器
+│   └── workbook.rb          # XLSX Workbook 高层 API
 ├── test/
 │   ├── xml_doc_test.rb      # xml_doc测试用例
-│   └── xmlutils_test.rb     # xmlutils测试用例
+│   ├── xmlutils_test.rb     # xmlutils测试用例
+│   └── xlsxkit_test.rb      # xlsxkit测试用例
 ├── manticore.gemspec        # Gem 打包配置
 ├── LICENSE                  # GNU AGPL-3.0 许可证
 └── README.md
@@ -274,11 +279,170 @@ puts node.pretty(:to_xml, :xml)
 p node.to_triad, node.to_obj
 ```
 
-
 ---
 
+## XlsxKit — 纯 Ruby XLSX 读取器（零第三方依赖）
 
-## ReDiscount Markdown 解析器（rdiscount API 兼容层）
+`xlsxkit` 是 XLSX（Office Open XML Spreadsheet）读取组件，提供流式读取与多格式输出，不依赖 rubyzip、roo、creek 等第三方 gem。
+
+### 设计目标
+
+- **零依赖**：纯 Ruby 实现 ZIP32 解包 + SAX 流式 XML 解析，无需安装任何 gem。
+- **流式读取**：SAX 风格逐行处理，内存占用恒定，适合大文件（>100MB）。
+- **多格式输出**：原生 Ruby 二维数组、JSON 字符串/文件、CSV 字符串/文件。
+- **稀疏单元格补齐**：根据 `r` 属性（如 `A1`、`C1`）自动补齐缺失列为 `nil`。
+
+### 文件结构
+
+```
+lib/
+├── xlsxkit/
+│   ├── zip_reader.rb          # 纯 Ruby ZIP32 读取器（DEFLATE / STORED）
+│   ├── sax_parser.rb          # SAX 流式 XML 解析器（增量缓冲，64KB 块读取）
+│   └── workbook.rb            # Workbook 高层 API（read_rows / to_a / to_json / to_csv）
+├── test/
+│   └── xlsxkit_test.rb        # 测试套件（15 用例，含 XLSX 生成辅助方法）
+└── manticore.rb               # 统一入口，require 'manticore' 自动加载
+```
+
+### 架构原理
+
+```
+XLSX 文件（ZIP 容器）
+    │
+    ▼
+┌─────────────────┐
+│  ZipReader       │  ← 按需读取单个 ZIP 条目，不全量解包
+│  (ZIP32 读取器)  │     支持 DEFLATE (method 8) 与 STORED (method 0)
+└─────────────────┘
+    │
+    ▼
+┌─────────────────┐
+│  SAXParser       │  ← 流式 XML 解析，增量缓冲，不构建 DOM 树
+│  (SAX 解析器)    │     64KB 块读取，内存占用恒定
+└─────────────────┘
+    │
+    ▼
+┌─────────────────┐
+│  Workbook        │  ← 高层 API：Sheet 选择、Shared Strings 缓存
+│  (工作簿 API)    │     行回调 → 数组 / JSON / CSV 输出
+└─────────────────┘
+```
+
+### 核心实现要点
+
+#### 1. ZipReader（ZIP32 读取器）
+
+- 从文件末尾反向搜索 EOCD（End of Central Directory）签名，定位中央目录。
+- 解析中央目录条目，获取每个文件的元数据（压缩方式、大小、Local Header 偏移）。
+- 按需读取单个条目：定位 Local Header → 跳过头部 → Zlib::Inflate 解压。
+- 与全量解包不同，仅按 name 读取所需条目，避免将整个 ZIP 展开到内存或磁盘。
+
+#### 2. SAXParser（流式 XML 解析器）
+
+- 基于增量缓冲的 SAX 解析器，不构建完整 DOM 树。
+- 64KB 块读取，逐标签回调 `start_element` / `characters` / `end_element`。
+- 支持标签属性解析、自闭合标签、CDATA 区段、实体引用展开。
+- 内存占用恒定，适合大 XML 文件（如 >50MB 的 sheet 数据）。
+
+#### 3. Workbook（高层 API）
+
+- **Sheet 解析**：从 `xl/workbook.xml` 提取 sheet 名称列表，通过 `xl/_rels/workbook.xml.rels` 映射 rId → 文件路径。
+- **Shared Strings 缓存**：首次访问时加载 `xl/sharedStrings.xml`，后续复用。
+- **行处理**：SAX 回调驱动，每行输出为一个数组。根据单元格引用（`r` 属性如 `A1`、`C1`）自动补齐缺失列为 `nil`。
+- **数据类型**：支持 shared string（`t="s"`）、inline string（`t="inlineStr"`）、boolean（`t="b"`）、error（`t="e"`）、formula string（`t="str"`）、数值（默认）。
+
+### 使用示例
+
+#### 基础读取
+
+```ruby
+require 'manticore'
+
+wb = XlsxKit::Workbook.open('data.xlsx')
+
+# 获取所有 sheet 名称
+puts wb.sheet_names  # => ["Sheet1", "Sheet2"]
+
+# 流式逐行读取
+wb.read_rows('Sheet1') do |row|
+  puts row.inspect  # => ["Alice", 30, nil, "alice@example.com"]
+end
+
+# 读取全部到数组
+rows = wb.to_a('Sheet1')  # => [["Name", "Age"], ["Alice", 30], ...]
+```
+
+#### JSON / CSV 输出
+
+```ruby
+wb = XlsxKit::Workbook.open('data.xlsx')
+
+# JSON 字符串
+json = wb.to_json('Sheet1', pretty: true)
+
+# JSON 文件
+wb.to_json_file('output.json', 'Sheet1')
+
+# CSV 字符串
+csv = wb.to_csv('Sheet1')
+
+# CSV 文件（流式写入，适合大数据量）
+wb.to_csv_file('output.csv', 'Sheet1')
+```
+
+#### Headers 模式（首行作为表头）
+
+```ruby
+wb = XlsxKit::Workbook.open('data.xlsx')
+
+# read_rows + headers: 每行返回 Hash
+wb.read_rows(0, headers: true) do |row|
+  puts row  # => {"Name"=>"Alice", "Age"=>30}
+end
+
+# to_a + headers: 返回 Hash 数组
+data = wb.to_a(0, headers: true)  # => [{"Name"=>"Alice", "Age"=>30}, ...]
+
+# to_json + headers: 输出 JSON 对象数组
+json = wb.to_json(0, headers: true)
+# => [{"Name":"Alice","Age":30}, {"Name":"Bob","Age":25}]
+```
+
+#### Sheet 选择
+
+```ruby
+wb = XlsxKit::Workbook.open('data.xlsx')
+
+# 按名称选择
+wb.read_rows('Sheet2') { |row| ... }
+
+# 按序号选择（0-based）
+wb.read_rows(1) { |row| ... }  # 第二个 sheet
+
+# 默认选择第一个 sheet
+wb.read_rows { |row| ... }
+```
+
+### 测试
+
+```bash
+ruby -I lib test/xlsxkit_test.rb
+```
+
+测试套件覆盖 15 个用例：
+
+1. 基础读取（字符串、数值）
+2. 多 sheet 选择（按名称、按序号）
+3. 共享字符串与内联字符串
+4. 布尔值与错误值
+5. 特殊字符（引号、换行、Unicode）
+6. 稀疏单元格（空列补 nil）
+7. Headers 模式
+8. JSON / CSV 输出
+9. 大文件流式读取
+
+---## ReDiscount Markdown 解析器（rdiscount API 兼容层）
 
 `mdutils/rediscount` 是 Markdown 处理组件，提供 Markdown → HTML 文档解析转换，完全兼容 `rdiscount` Gem 的 API 接口，无需编译 C 扩展即可在任何 Ruby 3.0+ 环境中运行。
 
@@ -487,6 +651,4 @@ ruby -I lib test/mdutils_test.rb
 - 若已安装，则执行输出对比，标记已知差异。
 - 若未安装，则跳过比对测试，仅运行纯 Ruby 断言。
 
-
 ---
-
