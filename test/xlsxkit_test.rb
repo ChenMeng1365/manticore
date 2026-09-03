@@ -22,6 +22,7 @@ require 'manticore'
 require 'zlib'
 require 'stringio'
 require 'tmpdir'
+require 'fileutils'
 
 Dir.glob(File.join(Dir.tmpdir, 'manticore_test_*.xlsx')).each { |f| File.delete(f) rescue nil }
 
@@ -453,4 +454,144 @@ class XlsxKitTest < Minitest::Test
   LOCAL_SIG   = "PK\x03\x04".b.freeze
   CDENTRY_SIG = "PK\x01\x02".b.freeze
   EOCD_SIG    = "PK\x05\x06".b.freeze
+end
+
+#####################################################################################################
+# Writer tests                                                                                       #
+#####################################################################################################
+
+class XlsxKitWriterTest < Minitest::Test
+  def setup
+    @dir = Dir.mktmpdir('manticore_writer')
+  end
+
+  def teardown
+    FileUtils.remove_entry(@dir) if @dir && File.exist?(@dir)
+  end
+
+  def path(name)
+    File.join(@dir, name)
+  end
+
+  #####################################################################################################
+  # 单 Sheet 写入 + 回读（round-trip）                                                                  #
+  #####################################################################################################
+
+  def test_write_single_sheet_roundtrip
+    rows = [
+      ['Name', 'Age', 'Score'],
+      ['Alice', 30, 95.5],
+      ['Bob', 25, 87.0],
+    ]
+    out = path('data.xlsx')
+    XlsxKit::Writer.write(out, rows)
+
+    wb = XlsxKit::Workbook.open(out)
+    assert_equal ['Sheet1'], wb.sheet_names
+    data = wb.to_a
+    assert_equal ['Name', 'Age', 'Score'], data[0]
+    assert_equal ['Alice', 30.0, 95.5], data[1]
+    assert_equal ['Bob', 25.0, 87.0], data[2]
+  end
+
+  #####################################################################################################
+  # 多 Sheet 写入                                                                                      #
+  #####################################################################################################
+
+  def test_write_multi_sheet
+    out = path('multi.xlsx')
+    XlsxKit::Writer.write(out, {
+      'People'  => [['Name'], ['Alice']],
+      'Numbers' => [[1, 2, 3], [4, 5, 6]],
+    })
+
+    wb = XlsxKit::Workbook.open(out)
+    assert_equal ['People', 'Numbers'], wb.sheet_names
+    assert_equal [['Name'], ['Alice']], wb.to_a('People')
+    assert_equal [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], wb.to_a('Numbers')
+  end
+
+  #####################################################################################################
+  # Hash 数组写入（首行 Hash 的 keys 作为表头）                                                         #
+  #####################################################################################################
+
+  def test_write_array_of_hashes
+    out = path('hashes.xlsx')
+    data = [
+      { 'Name' => 'Alice', 'Age' => 30 },
+      { 'Name' => 'Bob',   'Age' => 25 },
+    ]
+    XlsxKit::Writer.write(out, data)
+
+    wb = XlsxKit::Workbook.open(out)
+    assert_equal [['Name', 'Age'], ['Alice', 30.0], ['Bob', 25.0]], wb.to_a
+  end
+
+  #####################################################################################################
+  # 构建器模式 + 类型与特殊字符                                                                         #
+  #####################################################################################################
+
+  def test_builder_with_types_and_special_chars
+    out = path('builder.xlsx')
+    XlsxKit::Writer.build(out) do |wb|
+      wb.add_sheet('Types') do |s|
+        s << ['str', 'num', 'bool', 'nil']
+        s << ['hello', 1.5, true, nil]
+        s << ['特殊字符 <>&"', -2, false, nil]
+      end
+    end
+
+    wb = XlsxKit::Workbook.open(out)
+    data = wb.to_a
+    assert_equal ['str', 'num', 'bool', 'nil'], data[0]
+    assert_equal ['hello', 1.5, true], data[1]
+    assert_equal ['特殊字符 <>&"', -2.0, false], data[2]
+  end
+
+  #####################################################################################################
+  # 空 Sheet / 稀疏单元格                                                                               #
+  #####################################################################################################
+
+  def test_empty_and_sparse
+    out = path('sparse.xlsx')
+    XlsxKit::Writer.build(out) do |wb|
+      wb.add_sheet('Sparse') do |s|
+        s << ['A', nil, 'C']
+        s << [nil, 'B', nil]
+      end
+      wb.add_sheet('Empty')  # 空 Sheet
+    end
+
+    wb = XlsxKit::Workbook.open(out)
+    assert_equal ['Sparse', 'Empty'], wb.sheet_names
+    assert_equal [['A', nil, 'C'], [nil, 'B']], wb.to_a('Sparse')
+    assert_equal [], wb.to_a('Empty')
+  end
+
+  #####################################################################################################
+  # 写入到 IO（StringIO）                                                                              #
+  #####################################################################################################
+
+  def test_write_to_io
+    io = StringIO.new(''.b)
+    XlsxKit::Writer.write(io, [['X', 'Y'], [1, 2]])
+
+    # 写回磁盘后回读验证
+    out = path('io.xlsx')
+    File.open(out, 'wb') { |f| f.write(io.string) }
+
+    wb = XlsxKit::Workbook.open(out)
+    assert_equal [['X', 'Y'], [1.0, 2.0]], wb.to_a
+  end
+
+  #####################################################################################################
+  # 模块级便捷入口 XlsxKit.write                                                                        #
+  #####################################################################################################
+
+  def test_module_level_write
+    out = path('module.xlsx')
+    XlsxKit.write(out, [['K'], ['v']])
+    wb = XlsxKit::Workbook.open(out)
+    assert_equal [['K'], ['v']], wb.to_a
+  end
 end

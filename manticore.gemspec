@@ -2,7 +2,7 @@
 
 Gem::Specification.new do |spec|
   spec.name          = "manticore-smash"
-  spec.version       = "3.2.0"
+  spec.version       = "3.3.0"
   spec.authors       = ["Frampt"]
   spec.summary       = "A multi-format toolkit"
   spec.description   = "A multi-format library for parsing, formatting, interacting and more."

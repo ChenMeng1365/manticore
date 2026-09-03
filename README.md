@@ -281,9 +281,9 @@ p node.to_triad, node.to_obj
 
 ---
 
-## XlsxKit — 纯 Ruby XLSX 读取器（零第三方依赖）
+## XlsxKit — 纯 Ruby XLSX 读写器（零第三方依赖）
 
-`xlsxkit` 是 XLSX（Office Open XML Spreadsheet）读取组件，提供流式读取与多格式输出，不依赖 rubyzip、roo、creek 等第三方 gem。
+`xlsxkit` 是 XLSX（Office Open XML Spreadsheet）读写组件，提供流式读取、多格式输出，以及将原生 Ruby 数据写入表格的能力，不依赖 rubyzip、roo、creek 等第三方 gem。
 
 ### 设计目标
 
@@ -291,6 +291,7 @@ p node.to_triad, node.to_obj
 - **流式读取**：SAX 风格逐行处理，内存占用恒定，适合大文件（>100MB）。
 - **多格式输出**：原生 Ruby 二维数组、JSON 字符串/文件、CSV 字符串/文件。
 - **稀疏单元格补齐**：根据 `r` 属性（如 `A1`、`C1`）自动补齐缺失列为 `nil`。
+- **原生写入**：ZIP32 打包 + OOXML 生成，将二维数组 / Hash 数组 / 多 Sheet 写为 `.xlsx`。
 
 ### 文件结构
 
@@ -298,10 +299,13 @@ p node.to_triad, node.to_obj
 lib/
 ├── xlsxkit/
 │   ├── zip_reader.rb          # 纯 Ruby ZIP32 读取器（DEFLATE / STORED）
+│   ├── zip_writer.rb          # 纯 Ruby ZIP32 写入器（DEFLATE / STORED）
 │   ├── sax_parser.rb          # SAX 流式 XML 解析器（增量缓冲，64KB 块读取）
-│   └── workbook.rb            # Workbook 高层 API（read_rows / to_a / to_json / to_csv）
+│   ├── workbook.rb            # Workbook 读取 API（read_rows / to_a / to_json / to_csv）
+│   └── writer.rb              # Writer 写入 API（write / build / add_sheet）
 ├── test/
-│   └── xlsxkit_test.rb        # 测试套件（15 用例，含 XLSX 生成辅助方法）
+│   ├── xlsxkit_test.rb        # 读取测试套件（15 用例，含 XLSX 生成辅助方法）
+│   └── xlsxkit_writer_test.rb # 写入测试套件（7 用例，含 round-trip 回读）
 └── manticore.rb               # 统一入口，require 'manticore' 自动加载
 ```
 
@@ -424,10 +428,50 @@ wb.read_rows(1) { |row| ... }  # 第二个 sheet
 wb.read_rows { |row| ... }
 ```
 
+#### 写入 XLSX（原生数据 → 表格）
+
+```ruby
+require 'manticore'
+
+# 1. 一次性写入单个 Sheet（二维数组）
+XlsxKit::Writer.write('out.xlsx', [
+  ['Name', 'Age', 'Score'],
+  ['Alice', 30, 95.5],
+  ['Bob', 25, 87.0],
+])
+
+# 2. 一次性写入多个 Sheet
+XlsxKit::Writer.write('out.xlsx', {
+  'People'  => [['Name'], ['Alice']],
+  'Numbers' => [[1, 2, 3], [4, 5, 6]],
+})
+
+# 3. Hash 数组（keys 作为表头行）
+XlsxKit::Writer.write('out.xlsx', [
+  { 'Name' => 'Alice', 'Age' => 30 },
+  { 'Name' => 'Bob',   'Age' => 25 },
+])
+
+# 4. 构建器模式（逐行追加）
+XlsxKit::Writer.build('out.xlsx') do |wb|
+  wb.add_sheet('People') do |s|
+    s << ['Name', 'Age']
+    s << ['Alice', 30]
+  end
+  wb.add_sheet('Numbers', [[1, 2], [3, 4]])  # 也可直接传入 rows
+end
+
+# 5. 模块级便捷入口
+XlsxKit.write('out.xlsx', [['A'], ['v']])
+```
+
+单元格类型自动识别：`String` → 内联字符串，`Integer`/`Float`/`Numeric` → 数值，`true`/`false` → 布尔，`nil` → 空单元格（跳过，不占位）。
+
 ### 测试
 
 ```bash
 ruby -I lib test/xlsxkit_test.rb
+ruby -I lib test/xlsxkit_writer_test.rb
 ```
 
 测试套件覆盖 15 个用例：
